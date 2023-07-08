@@ -52,7 +52,7 @@ pub fn main() !void {
             os.exit(0);
         }
 
-        if (arg[0] == '-' and arg.len == 1) flags.stdin = true;
+        if (arg[0] == '-' and arg.len == 1) try files.append("-");
 
         if(arg[0] == '-') for (arg[1..]) |char| switch (char) {
             'A' => {
@@ -60,7 +60,10 @@ pub fn main() !void {
                 flags.show_ends = true;
                 flags.show_tabs = true;
             },
-            'b' => flags.number_nonblank = true,
+            'b' => {
+                flags.number_nonblank = true;
+                flags.number = true;
+            },
             'e' => {
                 flags.show_nonprinting = true;
                 flags.show_ends = true;
@@ -86,12 +89,14 @@ pub fn main() !void {
     }
 
     for (files.items) |value| {
-
+        //Handle stdin
         if (mem.eql(u8, value, "-")) {
+            flags.stdin = false;
             var stdin_size = try stdin.context.getEndPos();
             try stdin.readAllArrayList(&contents , stdin_size);
             continue;
         }
+
         //Get the absolute path for the files in the arguments
         var buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
         const cwd = try std.os.getcwd(&buf);
@@ -113,7 +118,6 @@ pub fn main() !void {
     while (iter.next()) |line| : (line_number += 1) {
         //Remove repeating blank lines
         if (flags.squeeze_blank and line.len == 0) {
-            line_number -= 1;
             if(first_occurance_empty_line) first_occurance_empty_line = false else continue;
         } else first_occurance_empty_line = true;
         
@@ -139,5 +143,6 @@ pub fn main() !void {
         if (flags.show_ends) try stdout.writeAll("$");
         //A newline to end the line
         try stdout.writeAll("\n");
+        
     }
 }

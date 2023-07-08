@@ -15,6 +15,13 @@ const Flags = struct {
     stdin: bool = false,
 };
 
+pub fn count_digits(comptime num_type: type,number: num_type) usize {
+    var count: usize = 0;
+    var temp_number = number;
+    while (temp_number != 0) : (count += 1) temp_number /= 10;
+    return count;
+}
+
 pub fn main() !void {
     //Allocator setup
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -22,7 +29,9 @@ pub fn main() !void {
     const allocator = arena.allocator();
 
     //preparing all the differnt ins and outs
-    const stdout = std.io.getStdOut().writer();
+    const stdout_file = std.io.getStdOut().writer();
+    var bw = std.io.bufferedWriter(stdout_file);
+    const stdout = bw.writer();
     const stderr = std.io.getStdErr().writer();
     const stdin = std.io.getStdIn().reader();
 
@@ -43,18 +52,18 @@ pub fn main() !void {
     //This while will parse all the different arguments
     var flags: Flags = .{};
     while (args.next()) |arg| {
-        if(mem.eql(u8, arg, "--version")) {
+        if (mem.eql(u8, arg, "--version")) {
             try stdout.print("{s}\n", .{help.version});
             os.exit(0);
         }
-        if(mem.eql(u8, arg, "--help")) {
+        if (mem.eql(u8, arg, "--help")) {
             try stdout.print("{s}\n", .{help.usage});
             os.exit(0);
         }
 
         if (arg[0] == '-' and arg.len == 1) try files.append("-");
 
-        if(arg[0] == '-') for (arg[1..]) |char| switch (char) {
+        if (arg[0] == '-') for (arg[1..]) |char| switch (char) {
             'A' => {
                 flags.show_nonprinting = true;
                 flags.show_ends = true;
@@ -79,13 +88,11 @@ pub fn main() !void {
             'u' => flags.ignored = true,
             'v' => flags.show_nonprinting = true,
             else => {
-                try stderr.print("{c} is not a valid flag\nCheck the --help flag for more info\n",.{char});
+                try stderr.print("{c} is not a valid flag\nCheck the --help flag for more info\n", .{char});
                 os.exit(1);
-            }
+            },
         };
-        if(arg[0] != '-') try files.append(arg);
-        
-        
+        if (arg[0] != '-') try files.append(arg);
     }
 
     for (files.items) |value| {
@@ -93,21 +100,21 @@ pub fn main() !void {
         if (mem.eql(u8, value, "-")) {
             flags.stdin = false;
             var stdin_size = try stdin.context.getEndPos();
-            try stdin.readAllArrayList(&contents , stdin_size);
+            try stdin.readAllArrayList(&contents, stdin_size);
             continue;
         }
 
         //Get the absolute path for the files in the arguments
         var buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
         const cwd = try std.os.getcwd(&buf);
-        const path = try fs.path.join(allocator, &[_][]const u8{cwd,value});
+        const path = try fs.path.join(allocator, &[_][]const u8{ cwd, value });
         defer allocator.free(path);
 
         //Time to open all the files and add their contents to a ArrayList
         const file = try fs.openFileAbsolute(path, .{});
         defer file.close();
-        const file_length = try file.getEndPos();   
-        const text = try file.readToEndAlloc(allocator,file_length);
+        const file_length = try file.getEndPos();
+        const text = try file.readToEndAlloc(allocator, file_length);
         defer allocator.free(text);
         try contents.appendSlice(text);
     }
@@ -115,34 +122,46 @@ pub fn main() !void {
     var line_number: usize = 1;
     var iter = mem.splitAny(u8, contents.items, "\n");
     var first_occurance_empty_line: bool = true;
+    var buffer = std.ArrayList(u8).init(allocator);
+    defer buffer.deinit();
     while (iter.next()) |line| : (line_number += 1) {
         //Remove repeating blank lines
         if (flags.squeeze_blank and line.len == 0) {
-            if(first_occurance_empty_line) first_occurance_empty_line = false else continue;
+            if (first_occurance_empty_line) first_occurance_empty_line = false else continue;
         } else first_occurance_empty_line = true;
-        
+
         //number lines if number flag is set and dont number when number_nonblank flag is set and it is an actual empty line
-        if (flags.number and !(flags.number_nonblank and line.len == 0)) try stdout.print("\t{d} ",.{line_number}) else line_number -= 1;
+        if (flags.number and !(flags.number_nonblank and line.len == 0)) {
+            var digits = 6 - count_digits(usize, line_number);
+            while (digits > 0) : (digits -= 1) {
+                try buffer.append(' ');
+            }
+            try buffer.appendSlice(try std.fmt.allocPrint(allocator, "{d}", .{line_number}));
+            try buffer.append(' ');
+        } else line_number -= 1;
 
         //Time to write!
-        for (line) |char| {
-            // Replace tabs with ^I if showtabs flag is set
-            if (flags.show_tabs and char == '\t') try stdout.writeAll("^I");
-            // Replace different nonprintable characters printable ones
-            if (flags.show_nonprinting) switch (char) {
-                '\r' => try stdout.writeAll("^M"),
-                '\x08' => try stdout.writeAll("^H"),
-                '\x07' => try stdout.writeAll("^G"),
-                '\x7F' => try stdout.writeAll("^?"),
-                else => try stdout.writeByte(char),
-            };
-            //else just write the character
-            if(!flags.show_nonprinting and !flags.show_tabs) try stdout.writeByte(char);
-        }
+        if (flags.show_nonprinting or flags.show_tabs) {
+            for (line) |char| {
+                // Replace tabs with ^I if showtabs flag is set
+                if (flags.show_tabs and char == '\t') try buffer.appendSlice("I^");
+                // Replace different nonprintable characters printable ones
+                if (flags.show_nonprinting) switch (char) {
+                    '\r' => try buffer.appendSlice("^M"),
+                    '\x08' => try buffer.appendSlice("^H"),
+                    '\x07' => try buffer.appendSlice("^G"),
+                    '\x7F' => try buffer.appendSlice("^?"),
+                    else => try buffer.append(char),
+                };
+                //else just write the character
+                try buffer.append(char);
+            }
+        } else try buffer.appendSlice(line);
         //This will show the ending of the line with a dollarsign
-        if (flags.show_ends) try stdout.writeAll("$");
+        if (flags.show_ends) try buffer.append('$');
         //A newline to end the line
-        try stdout.writeAll("\n");
-        
+        try buffer.append('\n');
     }
+    try stdout.print("{s}", .{buffer.items});
+    try bw.flush();
 }
